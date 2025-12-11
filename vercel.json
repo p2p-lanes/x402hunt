@@ -1,0 +1,8 @@
+{
+    "rewrites": [
+        {
+            "source": "/advertise",
+            "destination": "https://bxlheiduookkxrpwwawk.supabase.co/functions/v1/advertise"
+        }
+    ]
+}

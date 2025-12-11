@@ -58,7 +58,7 @@ function buildPaymentRequirements() {
         asset: USDC_BASE_MAINNET,
         payTo: RECIPIENT_ADDRESS,
         minAmountRequired: String(MIN_AMOUNT_ATOMIC), // Minimum amount, clients can pay more
-        resource: 'https://x402.hunt/advertise',
+        resource: 'https://x402hunt.xyz/advertise',
         description: 'Submit an advertisement (minimum $0.001 USDC)',
         mimeType: 'application/json',
         maxTimeoutSeconds: 7200,
