@@ -72,7 +72,8 @@ a:hover .text-accent {
   color: white;
 }
 
-.logo:hover {
+.logo:hover,
+.nav-link:hover {
   color: white !important;
 }
 
