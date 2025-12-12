@@ -4,7 +4,7 @@ import * as dotenv from 'dotenv'
 
 dotenv.config()
 
-const FUNCTION_URL = 'http://localhost:54321/functions/v1/advertise'
+const FUNCTION_URL = 'https://x402hunt.xyz/advertise'
 const TEST_PRIVATE_KEY = process.env.TEST_PRIVATE_KEY || ''
 
 if (!TEST_PRIVATE_KEY) {
@@ -16,8 +16,9 @@ async function main() {
     const provider = new ethers.JsonRpcProvider('https://mainnet.base.org');
     const wallet = new ethers.Wallet(TEST_PRIVATE_KEY, provider);
 
-    console.log(`\n--- Starting Minimal x402 PoC (Ethers) ---`)
+    console.log(`\n--- Production Ad Campaign: x402hunt advertising itself ---`)
     console.log(`Client Address: ${wallet.address}`)
+    console.log(`Target URL: ${FUNCTION_URL}`)
 
     // 1. Fetch Requirements
     console.log(`\n[1] Fetching requirements...`)
@@ -29,6 +30,8 @@ async function main() {
 
     if (reqResponse.status !== 402) {
         console.error(`Unexpected status: ${reqResponse.status}`);
+        const text = await reqResponse.text();
+        console.error(`Response: ${text}`);
         process.exit(1);
     }
 
@@ -36,7 +39,12 @@ async function main() {
     const requirements = reqData.accepts[0]; // x402scan-compatible format
     console.log('Requirements:', requirements);
 
-    // 2. Sign Payment
+    // 2. Adjust Amount (Pay 0.001 USDC for the ad)
+    // We can pay any amount between min and max. Let's pay 0.001 USDC (1000 atomic)
+    const amountToPay = '1000'; // 0.001 USDC
+    console.log(`\nAmount to pay: ${amountToPay} atomic units (0.001 USDC)`)
+
+    // 3. Sign Payment
     console.log(`\n[2] Signing payment...`)
     const chainId = 8453;
     const domain = {
@@ -57,14 +65,13 @@ async function main() {
         ]
     };
 
-    const amount = requirements.maxAmountRequired; // string
     const validBefore = Math.floor(Date.now() / 1000) + 3600;
     const nonce = '0x' + crypto.randomBytes(32).toString('hex');
 
     const value = {
         from: wallet.address,
         to: requirements.payTo,
-        value: amount,
+        value: amountToPay,
         validAfter: 0,
         validBefore: validBefore,
         nonce: nonce
@@ -73,61 +80,47 @@ async function main() {
     const signature = await wallet.signTypedData(domain, types, value);
     console.log(`Signature: ${signature}`);
 
-    // Verify locally
-    const recovered = ethers.verifyTypedData(domain, types, value, signature);
-    console.log(`Recovered: ${recovered}`);
-    console.log(`Match: ${recovered === wallet.address}`);
+    // 4. Submit Proof + Ad Data
+    console.log(`\n[3] Submitting payment proof & ad...`)
 
-    // 3. Submit Proof via X-PAYMENT header (x402 standard)
-    console.log(`\n[3] Submitting payment proof via X-PAYMENT header...`)
+    // Ad Content for x402hunt itself
+    const adData = {
+        title: "x402 Hunt - The Agentic Ad Board",
+        description: `## The First Machine-to-Machine Ad Platform
+Submit ads programmatically using pure crypto payments. 
 
-    // Build x402-compliant payment payload
-    const paymentPayload = {
-        x402Version: 1,
-        scheme: 'exact',
-        network: 'base',
-        payload: {
-            signature,
-            authorization: {
-                from: wallet.address,
-                to: requirements.payTo,
-                value: amount,
-                validAfter: '0',
-                validBefore: validBefore.toString(),
-                nonce,
-            }
-        }
+- **No Accounts**: Just sign and pay
+- **No Approvals**: Instant publication
+- **Agent Friendly**: REST API + EIP-712 support
+
+Build your agent's marketing strategy on x402 Hunt today.`,
+        link: "https://x402hunt.xyz"
     };
 
-    // Encode as base64 for X-PAYMENT header
-    const xPaymentHeader = Buffer.from(JSON.stringify(paymentPayload)).toString('base64');
-    console.log(`X-PAYMENT header (base64): ${xPaymentHeader.substring(0, 50)}...`);
+    const paymentProof = {
+        signature,
+        authorization: {
+            from: wallet.address,
+            to: requirements.payTo,
+            value: amountToPay,
+            validAfter: '0',
+            validBefore: validBefore.toString(),
+            nonce,
+        }
+    }
 
     const verifyResponse = await fetch(FUNCTION_URL, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-PAYMENT': xPaymentHeader
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            ad_data: {
-                title: 'Test Ad from PoC Script',
-                description: 'This is a test advertisement submitted via the x402 payment flow.',
-                link: 'https://example.com/test-product'
-            }
+            payment_proof: paymentProof,
+            ad_data: adData
         })
     });
 
     const verifyData = await verifyResponse.json();
     console.log(`\nStatus: ${verifyResponse.status}`);
-    console.log(`Response:`, verifyData);
-
-    // Check for X-PAYMENT-RESPONSE header
-    const paymentResponseHeader = verifyResponse.headers.get('x-payment-response');
-    if (paymentResponseHeader) {
-        const decoded = JSON.parse(Buffer.from(paymentResponseHeader, 'base64').toString());
-        console.log(`X-PAYMENT-RESPONSE:`, decoded);
-    }
+    console.log(`Response:`, JSON.stringify(verifyData, null, 2));
 }
 
 main().catch(console.error)
