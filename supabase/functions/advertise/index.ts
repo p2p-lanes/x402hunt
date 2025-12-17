@@ -52,7 +52,8 @@ async function generateCdpToken(endpoint: string) {
     return jwt;
 }
 
-function buildPaymentRequirements() {
+function buildPaymentRequirements(bidAmountUsdc: number) {
+    const bidAmountAtomic = Math.floor(bidAmountUsdc * 1000000);
     return {
         x402Version: 1,
         scheme: 'exact',
@@ -60,8 +61,8 @@ function buildPaymentRequirements() {
         chainId: 8453,
         asset: USDC_BASE_MAINNET,
         payTo: RECIPIENT_ADDRESS,
-        minAmountRequired: String(MIN_AMOUNT_ATOMIC),
-        maxAmountRequired: '100000000000', // Max 100,000 USDC
+        minAmountRequired: String(bidAmountAtomic),
+        maxAmountRequired: String(bidAmountAtomic),
         resource: 'https://x402hunt.xyz/advertise',
         description: 'Submit an advertisement',
         mimeType: 'application/json',
@@ -84,7 +85,51 @@ serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
     try {
-        // x402 standard: Read payment from X-PAYMENT header (base64-encoded JSON)
+        // Step 1: Parse request body first
+        const body = await req.json().catch(() => ({}));
+        const { ad_data, bid_amount } = body;
+
+        // Step 2: Validate bid_amount (early validation)
+        if (!bid_amount || typeof bid_amount !== 'number') {
+            return new Response(
+                JSON.stringify({
+                    error: 'Missing or invalid bid_amount. Must be a number.'
+                }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+        }
+
+        if (bid_amount < MIN_AMOUNT_USDC) {
+            return new Response(
+                JSON.stringify({
+                    error: `bid_amount must be at least ${MIN_AMOUNT_USDC} USDC. Received: ${bid_amount} USDC`
+                }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+        }
+
+        // Optional: Add maximum limit to prevent abuse
+        const MAX_AMOUNT_USDC = 100000; // 100k USDC max
+        if (bid_amount > MAX_AMOUNT_USDC) {
+            return new Response(
+                JSON.stringify({
+                    error: `bid_amount cannot exceed ${MAX_AMOUNT_USDC} USDC. Received: ${bid_amount} USDC`
+                }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+        }
+
+        // Step 3: Validate ad_data
+        if (!ad_data || !ad_data.title || !ad_data.description || !ad_data.link) {
+            return new Response(
+                JSON.stringify({
+                    error: 'Missing ad_data. Required: title, description, link'
+                }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+        }
+
+        // Step 4: Parse payment header (x402 standard: base64-encoded JSON)
         const xPaymentHeader = req.headers.get('x-payment');
         let paymentPayload = null;
 
@@ -100,41 +145,31 @@ serve(async (req) => {
             }
         }
 
-        // Get ad_data from request body
-        const body = await req.json().catch(() => ({}));
-        const { ad_data } = body;
-
         // x402 format: { x402Version, scheme, network, payload: { signature, authorization } }
         const payment_proof = paymentPayload?.payload;
 
-        // If no payment proof, return 402 with requirements
+        // Step 5: If no payment proof, return 402 with requirements
         if (!payment_proof) {
             return new Response(
                 JSON.stringify({
                     x402Version: 1,
                     error: 'Payment Required',
-                    accepts: [buildPaymentRequirements()]
+                    accepts: [buildPaymentRequirements(bid_amount)]
                 }),
                 { status: 402, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
             );
         }
 
-        // Validate ad_data
-        if (!ad_data || !ad_data.title || !ad_data.description || !ad_data.link) {
-            return new Response(
-                JSON.stringify({
-                    error: 'Missing ad_data. Required: title, description, link'
-                }),
-                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-            );
-        }
 
-        // Validate minimum payment amount
+        // Calculate actual USDC amount from atomic units
         const paidAmountAtomic = parseInt(payment_proof.authorization?.value || '0');
-        if (paidAmountAtomic < MIN_AMOUNT_ATOMIC) {
+        const expectedAmountAtomic = Math.floor(bid_amount * 1000000);
+
+        // Verify paid amount matches bid_amount exactly
+        if (paidAmountAtomic !== expectedAmountAtomic) {
             return new Response(
                 JSON.stringify({
-                    error: `Insufficient payment. Minimum: ${MIN_AMOUNT_USDC} USDC (${MIN_AMOUNT_ATOMIC} atomic). Received: ${paidAmountAtomic} atomic`
+                    error: `Payment amount mismatch. Expected: ${bid_amount} USDC (${Math.floor(bid_amount * 1000000)} atomic). Received: ${paidAmountAtomic} atomic`
                 }),
                 { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
             );
@@ -147,12 +182,8 @@ serve(async (req) => {
         // Step 1: Verify payment with CDP
         console.log('Received payment proof, verifying with CDP...');
 
-        // Build payment requirements with the actual payment amount for CDP verification
-        // CDP's exact scheme validates authorization.value against maxAmountRequired
-        const paymentRequirementsForCdp = {
-            ...buildPaymentRequirements(),
-            maxAmountRequired: String(paidAmountAtomic) // Use actual payment amount
-        };
+        // Build payment requirements for CDP verification
+        const paymentRequirementsForCdp = buildPaymentRequirements(bid_amount);
 
         const verifyToken = await generateCdpToken('/platform/v2/x402/verify');
         const cdpPayload = {
